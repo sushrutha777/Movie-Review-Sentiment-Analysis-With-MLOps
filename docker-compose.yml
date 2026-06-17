@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # MLflow Tracking Server
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mlflow-server
+    expose:
+      - "5000"
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/workspace
+    environment:
+      - MLFLOW_TRACKING_URI=sqlite:///mlflow.db
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /workspace/mlruns
+
+  # FastAPI API service
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi-api
+    expose:
+      - "8000"
+    ports:
+      - "8000:8000"
+    volumes:
+      - mlflow_data:/workspace
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MAX_SAMPLES=1000
+    depends_on:
+      - mlflow
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+  # Streamlit UI Frontend
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: streamlit-frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - FASTAPI_URL=http://api:8000
+    depends_on:
+      - api
+    command: streamlit run app/app.py --server.port 8501 --server.address 0.0.0.0
+
+volumes:
+  mlflow_data:
