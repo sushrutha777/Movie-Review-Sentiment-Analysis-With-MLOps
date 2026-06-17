@@ -1,4 +1,9 @@
+import os
 from typing import Tuple
+
+# Ensure TF_USE_LEGACY_KERAS is set before any TF imports
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+
 from src.predict import SentimentPredictor
 from src.utils import setup_logging
 
@@ -11,7 +16,7 @@ def init_predictor() -> None:
     """Explicitly initializes the predictor during application startup."""
     global _predictor
     if _predictor is None:
-        logger.info("Initializing API SentimentPredictor...")
+        logger.info("Initializing API SentimentPredictor (TensorFlow)...")
         _predictor = SentimentPredictor()
         logger.info("SentimentPredictor loaded successfully.")
 

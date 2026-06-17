@@ -1,13 +1,21 @@
 import json
-import logging
+import os
 from pathlib import Path
+
+# Ensure TF_USE_LEGACY_KERAS is set before importing TF
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+
 import matplotlib.pyplot as plt
 import mlflow
 import numpy as np
-import pandas as pd
-from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, precision_recall_fscore_support
-import torch
-from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
+import tensorflow as tf
+from sklearn.metrics import (
+    confusion_matrix,
+    classification_report,
+    accuracy_score,
+    precision_recall_fscore_support,
+)
+from transformers import TFAutoModelForSequenceClassification, AutoTokenizer
 
 from src.config import (
     BATCH_SIZE,
@@ -16,14 +24,16 @@ from src.config import (
     MODEL_SAVE_PATH,
     MLFLOW_TRACKING_URI,
     MLFLOW_EXPERIMENT_NAME,
+    NUM_LABELS,
 )
-from src.preprocess import get_data_loaders
+from src.preprocess import load_and_tokenize_data
 from src.utils import setup_logging
 
 logger = setup_logging("evaluate")
 
-def plot_confusion_matrix(cm: np.ndarray, classes: list[str], output_path: Path) -> None:
-    """Plots and saves a beautiful, professional confusion matrix."""
+
+def plot_confusion_matrix(cm: np.ndarray, classes: list, output_path: Path) -> None:
+    """Plots and saves a professional confusion matrix."""
     plt.figure(figsize=(6, 5))
     plt.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
     plt.title("Confusion Matrix - Sentiment Analysis")
@@ -51,16 +61,21 @@ def plot_confusion_matrix(cm: np.ndarray, classes: list[str], output_path: Path)
     logger.info(f"Saved confusion matrix plot to {output_path}")
 
 
-def run_evaluation() -> dict[str, float]:
-    """Runs evaluation on the test split using the saved best model."""
-    logger.info("Initializing Evaluation Script")
+def run_evaluation() -> dict:
+    """Runs evaluation on the test split using the saved best TF model.
+    
+    Pipeline:
+    1. Load saved TFDistilBert model + tokenizer
+    2. Load test dataset as tf.data.Dataset
+    3. model.evaluate() for loss/accuracy
+    4. Predict on all test samples for confusion matrix + classification report
+    5. Log results to MLflow
+    """
+    logger.info("Initializing Evaluation Script (TensorFlow)")
     
     # Configure MLflow
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
 
     # Check if saved model exists
     if not (MODEL_SAVE_PATH / "config.json").exists():
@@ -69,64 +84,53 @@ def run_evaluation() -> dict[str, float]:
         )
 
     # Load Model & Tokenizer
-    logger.info(f"Loading best local model from {MODEL_SAVE_PATH}")
-    model = DistilBertForSequenceClassification.from_pretrained(MODEL_SAVE_PATH)
-    tokenizer = DistilBertTokenizerFast.from_pretrained(MODEL_SAVE_PATH)
-    model.to(device)
-    model.eval()
+    logger.info(f"Loading saved TF model from {MODEL_SAVE_PATH}")
+    model = TFAutoModelForSequenceClassification.from_pretrained(str(MODEL_SAVE_PATH))
+    tokenizer = AutoTokenizer.from_pretrained(str(MODEL_SAVE_PATH))
 
-    # Load Test Data Loader
-    _, _, test_loader = get_data_loaders(
-        tokenizer=tokenizer,
-        batch_size=BATCH_SIZE,
+    # Load Test Data
+    _, test_tf, _ = load_and_tokenize_data(
+        max_samples=MAX_SAMPLES,
         max_length=MAX_LENGTH,
-        max_samples=MAX_SAMPLES
+        batch_size=BATCH_SIZE,
     )
 
+    # Evaluate with Keras — matches notebook: model.evaluate(test_tf)
+    logger.info("Running model.evaluate() on test dataset...")
+    eval_results = model.evaluate(test_tf)
+    avg_loss, accuracy_keras = eval_results[0], eval_results[1]
+    logger.info(f"Test Loss: {avg_loss:.4f}")
+    logger.info(f"Test Accuracy (Keras): {accuracy_keras:.4f}")
+
+    # Get predictions for detailed metrics (confusion matrix, classification report)
+    logger.info("Running prediction loop for detailed metrics...")
     all_preds = []
     all_labels = []
-    total_loss = 0.0
 
-    logger.info("Running evaluation predictions on the test dataset...")
-    with torch.no_grad():
-        for batch in test_loader:
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels = batch["label"].to(device)
+    for batch in test_tf:
+        inputs, labels = batch
+        outputs = model(inputs, training=False)
+        logits = outputs.logits
+        preds = tf.argmax(logits, axis=1).numpy()
+        all_preds.extend(preds)
+        all_labels.extend(labels.numpy())
 
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels
-            )
-
-            loss = outputs.loss
-            total_loss += loss.item()
-
-            logits = outputs.logits
-            preds = torch.argmax(logits, dim=1).cpu().numpy()
-
-            all_preds.extend(preds)
-            all_labels.extend(labels.cpu().numpy())
-
-    # Calculate metrics
-    avg_loss = total_loss / len(test_loader)
+    # Calculate sklearn metrics
     accuracy = accuracy_score(all_labels, all_preds)
     precision, recall, f1, _ = precision_recall_fscore_support(
         all_labels, all_preds, average="binary", zero_division=0
     )
 
-    logger.info("Evaluation metrics computed successfully.")
     logger.info(f"Test Accuracy: {accuracy:.4f}")
     logger.info(f"Test Precision: {precision:.4f}")
     logger.info(f"Test Recall: {recall:.4f}")
     logger.info(f"Test F1 Score: {f1:.4f}")
 
-    # Create logs directory if not exists
+    # Create logs directory
     logs_dir = Path(__file__).resolve().parent.parent / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     
-    # Compute Confusion Matrix
+    # Compute and save Confusion Matrix
     cm = confusion_matrix(all_labels, all_preds)
     cm_path = logs_dir / "confusion_matrix.png"
     plot_confusion_matrix(cm, classes=["Negative", "Positive"], output_path=cm_path)
@@ -135,29 +139,24 @@ def run_evaluation() -> dict[str, float]:
     report = classification_report(all_labels, all_preds, target_names=["Negative", "Positive"])
     logger.info(f"\nClassification Report:\n{report}")
 
-    # Log to MLflow if an active run exists, or start a new evaluation run
+    # Save classification report to file
+    report_path = logs_dir / "classification_report.txt"
+    with open(report_path, "w") as f:
+        f.write(report)
+
+    # Log to MLflow
     active_run = mlflow.active_run()
     if active_run:
         logger.info("Logging evaluation results to current active MLflow run.")
-        mlflow.log_metric("eval_loss", avg_loss)
-        mlflow.log_metric("eval_accuracy", accuracy)
-        mlflow.log_metric("eval_precision", precision)
-        mlflow.log_metric("eval_recall", recall)
-        mlflow.log_metric("eval_f1_score", f1)
-        mlflow.log_artifact(str(cm_path), artifact_path="evaluation_plots")
+        _log_eval_metrics(mlflow, avg_loss, accuracy, precision, recall, f1, cm_path)
     else:
         logger.info("No active MLflow run detected. Starting a dedicated evaluation run.")
         with mlflow.start_run(run_name="Standalone_Evaluation") as run:
             mlflow.log_params({
                 "eval_model_path": str(MODEL_SAVE_PATH),
-                "max_samples": MAX_SAMPLES
+                "max_samples": MAX_SAMPLES,
             })
-            mlflow.log_metric("eval_loss", avg_loss)
-            mlflow.log_metric("eval_accuracy", accuracy)
-            mlflow.log_metric("eval_precision", precision)
-            mlflow.log_metric("eval_recall", recall)
-            mlflow.log_metric("eval_f1_score", f1)
-            mlflow.log_artifact(str(cm_path), artifact_path="evaluation_plots")
+            _log_eval_metrics(mlflow, avg_loss, accuracy, precision, recall, f1, cm_path)
             logger.info(f"Evaluation results logged to run ID: {run.info.run_id}")
 
     return {
@@ -165,8 +164,19 @@ def run_evaluation() -> dict[str, float]:
         "accuracy": accuracy,
         "precision": precision,
         "recall": recall,
-        "f1_score": f1
+        "f1_score": f1,
     }
+
+
+def _log_eval_metrics(mlflow_module, loss, accuracy, precision, recall, f1, cm_path):
+    """Helper to log evaluation metrics to MLflow."""
+    mlflow_module.log_metric("eval_loss", loss)
+    mlflow_module.log_metric("eval_accuracy", accuracy)
+    mlflow_module.log_metric("eval_precision", precision)
+    mlflow_module.log_metric("eval_recall", recall)
+    mlflow_module.log_metric("eval_f1_score", f1)
+    mlflow_module.log_artifact(str(cm_path), artifact_path="evaluation_plots")
+
 
 if __name__ == "__main__":
     run_evaluation()

@@ -1,48 +1,18 @@
 import os
-from typing import Dict, List, Tuple, Union, Optional
-import pandas as pd
-from transformers import DistilBertTokenizerFast
-import torch
-from torch.utils.data import Dataset, DataLoader
+from typing import Tuple, List, Optional
+import numpy as np
+from transformers import AutoTokenizer
 from src.utils import setup_logging
-from src.config import RANDOM_SEED
+from src.config import RANDOM_SEED, MODEL_NAME, MAX_LENGTH, BATCH_SIZE
 
 logger = setup_logging("preprocess")
 
-class MovieReviewDataset(Dataset):
-    """PyTorch Dataset for Tokenized Movie Reviews."""
-    def __init__(self, texts: List[str], labels: List[int], tokenizer: DistilBertTokenizerFast, max_length: int):
-        self.texts = texts
-        self.labels = labels
-        self.tokenizer = tokenizer
-        self.max_length = max_length
 
-    def __len__(self) -> int:
-        return len(self.texts)
-
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        text = str(self.texts[idx])
-        label = self.labels[idx]
-
-        encoding = self.tokenizer(
-            text,
-            add_special_tokens=True,
-            max_length=self.max_length,
-            padding="max_length",
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors="pt"
-        )
-
-        return {
-            "input_ids": encoding["input_ids"].flatten(),
-            "attention_mask": encoding["attention_mask"].flatten(),
-            "label": torch.tensor(label, dtype=torch.long)
-        }
-
-
-def generate_mock_data(num_samples: int) -> Tuple[List[str], List[int]]:
-    """Generates synthetic movie review data for offline testing and fast CI/CD pipelines."""
+def generate_mock_data(num_samples: int) -> dict:
+    """Generates synthetic movie review data for offline testing and fast CI/CD pipelines.
+    
+    Returns a dict with 'train' and 'test' splits, each containing 'text' and 'label' lists.
+    """
     logger.info(f"Generating {num_samples} mock movie reviews...")
     
     positive_templates = [
@@ -70,102 +40,113 @@ def generate_mock_data(num_samples: int) -> Tuple[List[str], List[int]]:
     
     for i in range(num_samples):
         # Alternate positive and negative
+        idx = (RANDOM_SEED + i) % len(positive_templates)
         if i % 2 == 0:
-            texts.append(random_choice_with_seed(positive_templates, i))
+            texts.append(positive_templates[idx])
             labels.append(1)
         else:
-            texts.append(random_choice_with_seed(negative_templates, i))
+            texts.append(negative_templates[idx])
             labels.append(0)
             
-    return texts, labels
+    # Split 80/20 into train/test
+    split_idx = int(num_samples * 0.8)
+    
+    return {
+        "train": {"text": texts[:split_idx], "label": labels[:split_idx]},
+        "test": {"text": texts[split_idx:], "label": labels[split_idx:]},
+    }
 
 
-def random_choice_with_seed(templates: List[str], seed_offset: int) -> str:
-    """Selects a template deterministically using the offset."""
-    # Simple deterministic hash selection to avoid raw random side effects
-    idx = (RANDOM_SEED + seed_offset) % len(templates)
-    return templates[idx]
-
-
-def load_imdb_data(max_samples: int = -1) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Loads the IMDB movie reviews dataset. Falls back to mock data if offline/error."""
+def load_and_tokenize_data(
+    max_samples: int = -1,
+    max_length: int = MAX_LENGTH,
+    batch_size: int = BATCH_SIZE,
+):
+    """Loads the IMDB dataset, tokenizes it, and returns TF datasets.
+    
+    This replicates the exact pipeline from the Colab notebook:
+    1. Load IMDB via HuggingFace datasets
+    2. Tokenize with AutoTokenizer (padding="max_length", truncation=True)
+    3. Convert to tf.data.Dataset via .to_tf_dataset()
+    
+    Args:
+        max_samples: Max training samples (-1 for full dataset).
+        max_length: Tokenizer max sequence length.
+        batch_size: Batch size for TF datasets.
+        
+    Returns:
+        Tuple of (train_tf_dataset, test_tf_dataset, tokenizer)
+    """
+    import tensorflow as tf
+    
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    
     try:
-        from datasets import load_dataset
+        from datasets import load_dataset, Dataset
         logger.info("Attempting to load IMDB dataset from Hugging Face datasets...")
-        dataset = load_dataset("imdb", trust_remote_code=True)
-        
-        train_df = pd.DataFrame(dataset["train"])
-        test_df = pd.DataFrame(dataset["test"])
-        
-        # Shuffle
-        train_df = train_df.sample(frac=1, random_state=RANDOM_SEED).reset_index(drop=True)
-        test_df = test_df.sample(frac=1, random_state=RANDOM_SEED).reset_index(drop=True)
-        
-        logger.info(f"Loaded IMDB dataset. Train shape: {train_df.shape}, Test shape: {test_df.shape}")
+        dataset = load_dataset("imdb")
+        logger.info(f"Loaded IMDB dataset. Train: {len(dataset['train'])}, Test: {len(dataset['test'])}")
         
     except Exception as e:
-        logger.warning(f"Could not load dataset from HuggingFace ({e}). Falling back to generating mock data...")
+        from datasets import Dataset, DatasetDict
+        logger.warning(f"Could not load dataset from HuggingFace ({e}). Falling back to mock data...")
         
-        # Generate 1500 mock samples to divide into train (1000), val (250), test (250)
-        mock_samples = 1500 if max_samples <= 0 else int(max_samples * 1.5)
-        texts, labels = generate_mock_data(mock_samples)
+        mock_count = 200 if max_samples <= 0 else max(50, int(max_samples * 1.5))
+        mock_data = generate_mock_data(mock_count)
         
-        df = pd.DataFrame({"text": texts, "label": labels})
-        # Split mock data
-        train_df = df.iloc[:int(mock_samples * 0.7)].reset_index(drop=True)
-        test_df = df.iloc[int(mock_samples * 0.7):].reset_index(drop=True)
-        
-    # Validation split from training data
-    val_size = int(len(train_df) * 0.2)
-    val_df = train_df.iloc[:val_size].reset_index(drop=True)
-    train_df = train_df.iloc[val_size:].reset_index(drop=True)
+        dataset = DatasetDict({
+            "train": Dataset.from_dict(mock_data["train"]),
+            "test": Dataset.from_dict(mock_data["test"]),
+        })
+        logger.info(f"Generated mock dataset. Train: {len(dataset['train'])}, Test: {len(dataset['test'])}")
     
-    # Cap samples if max_samples is set (for testing or fast CPU execution)
+    # Cap samples if max_samples is set (for testing or fast CPU runs)
     if max_samples > 0:
         logger.info(f"Capping training samples to {max_samples}")
-        train_df = train_df.head(max_samples).reset_index(drop=True)
-        val_df = val_df.head(max(10, int(max_samples * 0.2))).reset_index(drop=True)
-        test_df = test_df.head(max(10, int(max_samples * 0.2))).reset_index(drop=True)
+        dataset["train"] = dataset["train"].select(range(min(max_samples, len(dataset["train"]))))
+        test_cap = max(10, int(max_samples * 0.2))
+        dataset["test"] = dataset["test"].select(range(min(test_cap, len(dataset["test"]))))
 
-    logger.info(f"Final dataset split sizes -> Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
-    return train_df, val_df, test_df
+    # Tokenize — matches notebook's tokenize_batch function exactly
+    def tokenize_batch(batch):
+        return tokenizer(
+            batch["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=max_length
+        )
 
-
-def get_data_loaders(
-    tokenizer: DistilBertTokenizerFast,
-    batch_size: int,
-    max_length: int,
-    max_samples: int = -1
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Generates PyTorch DataLoaders for training, validation, and testing."""
-    train_df, val_df, test_df = load_imdb_data(max_samples)
-
-    train_dataset = MovieReviewDataset(
-        texts=train_df["text"].tolist(),
-        labels=train_df["label"].tolist(),
-        tokenizer=tokenizer,
-        max_length=max_length
+    logger.info("Tokenizing data...")
+    tokenized_datasets = dataset.map(tokenize_batch, batched=True)
+    
+    # Post-process to match notebook:
+    # Remove raw text column, rename label -> labels, set TF format
+    tokenized_datasets = tokenized_datasets.remove_columns(["text"])
+    tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+    tokenized_datasets.set_format(
+        type="tensorflow",
+        columns=["input_ids", "attention_mask", "labels"]
     )
 
-    val_dataset = MovieReviewDataset(
-        texts=val_df["text"].tolist(),
-        labels=val_df["label"].tolist(),
-        tokenizer=tokenizer,
-        max_length=max_length
+    # Convert to tf.data.Dataset — matches notebook exactly
+    logger.info("Converting to tf.data.Dataset...")
+    train_tf = tokenized_datasets["train"].to_tf_dataset(
+        columns=["input_ids", "attention_mask"],
+        label_cols=["labels"],
+        shuffle=True,
+        batch_size=batch_size,
     )
 
-    test_dataset = MovieReviewDataset(
-        texts=test_df["text"].tolist(),
-        labels=test_df["label"].tolist(),
-        tokenizer=tokenizer,
-        max_length=max_length
+    test_tf = tokenized_datasets["test"].to_tf_dataset(
+        columns=["input_ids", "attention_mask"],
+        label_cols=["labels"],
+        shuffle=False,
+        batch_size=batch_size,
     )
 
-    # Pin memory for faster GPU transfers if available
-    pin_mem = torch.cuda.is_available()
+    logger.info(
+        f"Final dataset sizes -> Train: {len(tokenized_datasets['train'])}, "
+        f"Test: {len(tokenized_datasets['test'])}"
+    )
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=pin_mem)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=pin_mem)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=pin_mem)
-
-    return train_loader, val_loader, test_loader
+    return train_tf, test_tf, tokenizer

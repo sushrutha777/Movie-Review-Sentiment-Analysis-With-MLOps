@@ -46,8 +46,11 @@ mlflow.db.db
 
 # Large data and saved models
 data/
-models/distilbert_v1/*
-!models/distilbert_v1/.gitkeep
+models/distilbert_v1/
+notebooks/distilbert_imdb_tf_model/
+
+# Logs (generated at runtime)
+logs/
 
 # OS generated files
 .DS_Store

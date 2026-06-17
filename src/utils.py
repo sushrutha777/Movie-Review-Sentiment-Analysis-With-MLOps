@@ -4,7 +4,6 @@ import random
 import sys
 from pathlib import Path
 import numpy as np
-import torch
 
 # Base log path
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
@@ -42,9 +41,11 @@ def setup_logging(name: str = "mlops") -> logging.Logger:
     return logger
 
 def set_seed(seed: int = 42) -> None:
-    """Sets random seeds for reproducibility."""
+    """Sets random seeds for reproducibility across Python, NumPy, and TensorFlow."""
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    try:
+        import tensorflow as tf
+        tf.random.set_seed(seed)
+    except ImportError:
+        pass

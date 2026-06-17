@@ -2,16 +2,18 @@ import json
 import os
 import time
 from pathlib import Path
+
+# Ensure TF_USE_LEGACY_KERAS is set before importing TF
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+
 import mlflow
-import mlflow.transformers
+import mlflow.tensorflow
 import numpy as np
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-import torch
-from torch.optim import AdamW
-from transformers import (
-    DistilBertForSequenceClassification,
-    DistilBertTokenizerFast,
-)
+import tensorflow as tf
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.losses import SparseCategoricalCrossentropy
+from tensorflow.keras.metrics import SparseCategoricalAccuracy
+from transformers import TFAutoModelForSequenceClassification
 
 from src.config import (
     BATCH_SIZE,
@@ -23,103 +25,28 @@ from src.config import (
     MLFLOW_TRACKING_URI,
     MODEL_NAME,
     MODEL_SAVE_PATH,
+    NUM_LABELS,
     RANDOM_SEED,
     REGISTERED_MODEL_NAME,
 )
-from src.preprocess import get_data_loaders
+from src.preprocess import load_and_tokenize_data
 from src.utils import set_seed, setup_logging
 
 logger = setup_logging("train")
 
-def train_epoch(
-    model: torch.nn.Module,
-    data_loader: torch.utils.data.DataLoader,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device
-) -> float:
-    """Trains the model for one epoch."""
-    model.train()
-    total_loss = 0.0
-    
-    for batch_idx, batch in enumerate(data_loader):
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        labels = batch["label"].to(device)
-
-        optimizer.zero_grad()
-
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels
-        )
-
-        loss = outputs.loss
-        total_loss += loss.item()
-
-        loss.backward()
-        # Gradient clipping to prevent exploding gradients
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-
-        if batch_idx % 20 == 0:
-            logger.info(f"  Batch {batch_idx}/{len(data_loader)} - Loss: {loss.item():.4f}")
-
-    return total_loss / len(data_loader)
-
-
-def evaluate(
-    model: torch.nn.Module,
-    data_loader: torch.utils.data.DataLoader,
-    device: torch.device
-) -> tuple[float, dict[str, float]]:
-    """Evaluates the model on validation/test loader."""
-    model.eval()
-    total_loss = 0.0
-    all_preds = []
-    all_labels = []
-
-    with torch.no_grad():
-        for batch in data_loader:
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels = batch["label"].to(device)
-
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels
-            )
-
-            loss = outputs.loss
-            total_loss += loss.item()
-
-            logits = outputs.logits
-            preds = torch.argmax(logits, dim=1).cpu().numpy()
-            
-            all_preds.extend(preds)
-            all_labels.extend(labels.cpu().numpy())
-
-    avg_loss = total_loss / len(data_loader)
-    
-    accuracy = accuracy_score(all_labels, all_preds)
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        all_labels, all_preds, average="binary", zero_division=0
-    )
-
-    metrics = {
-        "loss": avg_loss,
-        "accuracy": accuracy,
-        "precision": precision,
-        "recall": recall,
-        "f1_score": f1
-    }
-
-    return avg_loss, metrics
-
 
 def main() -> None:
-    logger.info("Initializing Sentiment Analysis Training Pipeline")
+    """Main training pipeline — mirrors the Colab notebook approach.
+    
+    Pipeline:
+    1. Load & tokenize IMDB dataset → tf.data.Dataset
+    2. Initialize TFDistilBertForSequenceClassification
+    3. Compile with Adam(lr=2e-5), SparseCategoricalCrossentropy(from_logits=True)
+    4. model.fit() with validation
+    5. Log metrics to MLflow
+    6. Save model + tokenizer locally and to MLflow registry
+    """
+    logger.info("Initializing Sentiment Analysis Training Pipeline (TensorFlow)")
     set_seed(RANDOM_SEED)
 
     # MLflow Setup
@@ -127,31 +54,39 @@ def main() -> None:
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
-    # Device configuration
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
+    # GPU check
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpus:
+        logger.info(f"Using GPU: {gpus}")
+        # Allow memory growth to avoid OOM
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    else:
+        logger.info("No GPU found. Training on CPU.")
 
-    # Load Tokenizer & Model
-    logger.info(f"Loading pre-trained DistilBERT tokenizer: {MODEL_NAME}")
-    tokenizer = DistilBertTokenizerFast.from_pretrained(MODEL_NAME)
-    
-    logger.info(f"Loading pre-trained DistilBERT model: {MODEL_NAME}")
-    model = DistilBertForSequenceClassification.from_pretrained(MODEL_NAME, num_labels=2)
-    model.to(device)
-
-    # Load Data Loaders
-    logger.info("Loading dataset and creating PyTorch DataLoaders")
-    train_loader, val_loader, test_loader = get_data_loaders(
-        tokenizer=tokenizer,
-        batch_size=BATCH_SIZE,
+    # Load Data
+    logger.info("Loading dataset and creating TF datasets...")
+    train_tf, test_tf, tokenizer = load_and_tokenize_data(
+        max_samples=MAX_SAMPLES,
         max_length=MAX_LENGTH,
-        max_samples=MAX_SAMPLES
+        batch_size=BATCH_SIZE,
     )
 
-    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
+    # Initialize Model — matches notebook exactly
+    logger.info(f"Initializing TFDistilBert model: {MODEL_NAME} (num_labels={NUM_LABELS})")
+    model = TFAutoModelForSequenceClassification.from_pretrained(
+        MODEL_NAME,
+        num_labels=NUM_LABELS,
+        from_pt=True,
+    )
 
-    best_val_loss = float("inf")
-    best_epoch = -1
+    # Compile — matches notebook exactly
+    model.compile(
+        optimizer=Adam(learning_rate=LEARNING_RATE),
+        loss=SparseCategoricalCrossentropy(from_logits=True),
+        metrics=[SparseCategoricalAccuracy(name="accuracy")],
+    )
+    model.summary(print_fn=logger.info)
 
     # Start MLflow run
     with mlflow.start_run() as run:
@@ -159,102 +94,89 @@ def main() -> None:
         
         # Log hyperparameters
         mlflow.log_params({
-            "model_type": "DistilBERT",
+            "model_type": "TFDistilBERT",
+            "model_name": MODEL_NAME,
             "learning_rate": LEARNING_RATE,
             "batch_size": BATCH_SIZE,
             "epochs": EPOCHS,
             "max_length": MAX_LENGTH,
             "max_samples": MAX_SAMPLES,
-            "device": str(device),
-            "optimizer": "AdamW"
+            "num_labels": NUM_LABELS,
+            "optimizer": "Adam",
+            "loss": "SparseCategoricalCrossentropy(from_logits=True)",
         })
 
-        for epoch in range(1, EPOCHS + 1):
-            logger.info(f"Starting Epoch {epoch}/{EPOCHS}")
-            
-            # Train
-            train_loss = train_epoch(model, train_loader, optimizer, device)
-            logger.info(f"Epoch {epoch} - Average Train Loss: {train_loss:.4f}")
-            mlflow.log_metric("train_loss", train_loss, step=epoch)
-
-            # Validate
-            val_loss, val_metrics = evaluate(model, val_loader, device)
-            logger.info(
-                f"Epoch {epoch} - Val Loss: {val_loss:.4f} | "
-                f"Accuracy: {val_metrics['accuracy']:.4f} | "
-                f"F1 Score: {val_metrics['f1_score']:.4f}"
-            )
-            
-            # Log validation metrics
-            mlflow.log_metric("validation_loss", val_loss, step=epoch)
-            mlflow.log_metric("accuracy", val_metrics["accuracy"], step=epoch)
-            mlflow.log_metric("precision", val_metrics["precision"], step=epoch)
-            mlflow.log_metric("recall", val_metrics["recall"], step=epoch)
-            mlflow.log_metric("f1_score", val_metrics["f1_score"], step=epoch)
-
-            # Check if best model
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_epoch = epoch
-                logger.info(f"New best model found at epoch {epoch}! Saving locally to {MODEL_SAVE_PATH}")
-                
-                # Save model and tokenizer locally
-                model.save_pretrained(MODEL_SAVE_PATH)
-                tokenizer.save_pretrained(MODEL_SAVE_PATH)
-                
-                # Write a tiny meta file
-                meta = {
-                    "epoch": epoch,
-                    "validation_loss": val_loss,
-                    "accuracy": val_metrics["accuracy"],
-                    "f1_score": val_metrics["f1_score"],
-                    "saved_at": time.strftime("%Y-%m-%d %H:%M:%S")
-                }
-                with open(MODEL_SAVE_PATH / "meta.json", "w") as f:
-                    json.dump(meta, f, indent=4)
-
-        logger.info(f"Training completed. Best validation loss: {best_val_loss:.4f} at epoch {best_epoch}")
-
-        # Run final evaluation on the test set using the best model
-        logger.info("Loading best model for test evaluation...")
-        best_model = DistilBertForSequenceClassification.from_pretrained(MODEL_SAVE_PATH)
-        best_model.to(device)
-        
-        test_loss, test_metrics = evaluate(best_model, test_loader, device)
-        logger.info(
-            f"Test Set Evaluation -> Loss: {test_loss:.4f} | "
-            f"Accuracy: {test_metrics['accuracy']:.4f} | "
-            f"Precision: {test_metrics['precision']:.4f} | "
-            f"Recall: {test_metrics['recall']:.4f} | "
-            f"F1 Score: {test_metrics['f1_score']:.4f}"
+        # Train — matches notebook: model.fit(train_tf, validation_data=test_tf, epochs=EPOCHS)
+        logger.info(f"Starting Training for {EPOCHS} epochs...")
+        history = model.fit(
+            train_tf,
+            validation_data=test_tf,
+            epochs=EPOCHS,
         )
-        
-        # Log test metrics
+
+        # Log per-epoch metrics to MLflow
+        for epoch_idx in range(len(history.history["loss"])):
+            epoch = epoch_idx + 1
+            mlflow.log_metric("train_loss", history.history["loss"][epoch_idx], step=epoch)
+            mlflow.log_metric("train_accuracy", history.history["accuracy"][epoch_idx], step=epoch)
+            mlflow.log_metric("val_loss", history.history["val_loss"][epoch_idx], step=epoch)
+            mlflow.log_metric("val_accuracy", history.history["val_accuracy"][epoch_idx], step=epoch)
+            
+            logger.info(
+                f"Epoch {epoch}/{EPOCHS} - "
+                f"loss: {history.history['loss'][epoch_idx]:.4f} - "
+                f"accuracy: {history.history['accuracy'][epoch_idx]:.4f} - "
+                f"val_loss: {history.history['val_loss'][epoch_idx]:.4f} - "
+                f"val_accuracy: {history.history['val_accuracy'][epoch_idx]:.4f}"
+            )
+
+        # Evaluate on test set
+        logger.info("Evaluating on Test Set...")
+        eval_results = model.evaluate(test_tf)
+        test_loss, test_accuracy = eval_results[0], eval_results[1]
+        logger.info(f"Final Test Loss: {test_loss:.4f}")
+        logger.info(f"Final Test Accuracy: {test_accuracy:.4f}")
+
         mlflow.log_metrics({
             "test_loss": test_loss,
-            "test_accuracy": test_metrics["accuracy"],
-            "test_precision": test_metrics["precision"],
-            "test_recall": test_metrics["recall"],
-            "test_f1_score": test_metrics["f1_score"]
+            "test_accuracy": test_accuracy,
         })
 
-        # Log Hugging Face model components as an MLflow Transformer model
-        logger.info("Logging best model to MLflow Model Registry...")
-        
-        # Define component dictionary for log_model
-        transformers_components = {
-            "model": best_model,
-            "tokenizer": tokenizer,
+        # Save model + tokenizer locally — matches notebook's model.save_pretrained()
+        logger.info(f"Saving model to: {MODEL_SAVE_PATH}")
+        model.save_pretrained(str(MODEL_SAVE_PATH))
+        tokenizer.save_pretrained(str(MODEL_SAVE_PATH))
+
+        # Write metadata file
+        meta = {
+            "epochs": EPOCHS,
+            "final_train_loss": float(history.history["loss"][-1]),
+            "final_train_accuracy": float(history.history["accuracy"][-1]),
+            "test_loss": float(test_loss),
+            "test_accuracy": float(test_accuracy),
+            "max_length": MAX_LENGTH,
+            "batch_size": BATCH_SIZE,
+            "learning_rate": LEARNING_RATE,
+            "model_name": MODEL_NAME,
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        
-        # We also need a pipeline mapping
-        # MLflow's transformers flavor simplifies loading model + tokenizer
-        mlflow.transformers.log_model(
-            transformers_model=transformers_components,
-            artifact_path="model",
-            registered_model_name=REGISTERED_MODEL_NAME
-        )
-        logger.info("Model registered in MLflow registry successfully!")
+        with open(MODEL_SAVE_PATH / "meta.json", "w") as f:
+            json.dump(meta, f, indent=4)
+        logger.info(f"Model metadata saved to {MODEL_SAVE_PATH / 'meta.json'}")
+
+        # Save training history
+        history_path = MODEL_SAVE_PATH / "training_history.json"
+        with open(history_path, "w") as f:
+            json.dump({k: [float(v) for v in vals] for k, vals in history.history.items()}, f, indent=4)
+        logger.info(f"Training history saved to {history_path}")
+
+        # Log model artifact to MLflow
+        logger.info("Logging model to MLflow...")
+        mlflow.log_artifacts(str(MODEL_SAVE_PATH), artifact_path="model")
+        logger.info("Model logged to MLflow successfully!")
+
+    logger.info("Training pipeline completed successfully.")
+
 
 if __name__ == "__main__":
     main()

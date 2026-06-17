@@ -1,207 +1,118 @@
 import os
-import requests
+
+# CRITICAL CONFIGURATION
+# This MUST be set before importing tensorflow
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 import streamlit as st
+import tensorflow as tf
+from transformers import AutoTokenizer, TFAutoModelForSequenceClassification
 
-# Page Configuration
-st.set_page_config(
-    page_title="Movie Review Sentiment Analyzer",
-    page_icon="🎬",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Use the project's centralized model save path from config
+from src.config import MODEL_SAVE_PATH, MODEL_NAME, MAX_LENGTH
 
-# API Endpoint config
-FASTAPI_URL = os.getenv("FASTAPI_URL", "http://localhost:8000")
-
-# Session State for prediction history
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-# Inject custom styling for a premium look
-st.markdown("""
-    <style>
-    .main {
-        background-color: #0e1117;
-        color: #ffffff;
-    }
-    .stButton>button {
-        background: linear-gradient(135deg, #6200ea 0%, #3700b3 100%);
-        color: white;
-        border: none;
-        padding: 0.6rem 2rem;
-        border-radius: 8px;
-        font-weight: bold;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 12px rgba(98, 0, 234, 0.3);
-    }
-    .stButton>button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 18px rgba(98, 0, 234, 0.4);
-    }
-    .prediction-card-pos {
-        background-color: rgba(46, 204, 113, 0.15);
-        border: 2px solid #2ecc71;
-        padding: 1.5rem;
-        border-radius: 12px;
-        margin-top: 1rem;
-        box-shadow: 0 4px 15px rgba(46, 204, 113, 0.1);
-    }
-    .prediction-card-neg {
-        background-color: rgba(231, 76, 60, 0.15);
-        border: 2px solid #e74c3c;
-        padding: 1.5rem;
-        border-radius: 12px;
-        margin-top: 1rem;
-        box-shadow: 0 4px 15px rgba(231, 76, 60, 0.1);
-    }
-    .metric-value {
-        font-size: 2.5rem;
-        font-weight: 800;
-        margin-bottom: 0;
-    }
-    .sidebar-title {
-        font-size: 1.4rem;
-        font-weight: bold;
-        color: #bb86fc;
-        margin-bottom: 1rem;
-    }
-    .history-item {
-        background-color: #1f1f2e;
-        padding: 0.8rem;
-        border-radius: 6px;
-        margin-bottom: 0.6rem;
-        border-left: 4px solid #bb86fc;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# Main Title & Subtitle
-st.title("🎬 Movie Review Sentiment Analyzer")
-st.markdown("##### A production-grade MLOps application powered by **DistilBERT** and **FastAPI**.")
-st.markdown("---")
-
-# Layout with two main columns
-col1, col2 = st.columns([3, 2], gap="large")
-
-with col1:
-    st.markdown("### Enter Your Review")
-    review_text = st.text_area(
-        label="Write or paste a movie review below to analyze its sentiment:",
-        placeholder="e.g. This movie was absolutely fantastic! The acting was superb and the plot kept me engaged...",
-        height=200,
-        label_visibility="collapsed"
-    )
+# Cache resources so they load only once
+@st.cache_resource
+def load_resources():
+    # 1. Define the local folder where your tf_model.h5 and config.json are located
+    local_model_path = str(MODEL_SAVE_PATH)
     
-    analyze_btn = st.button("Analyze Sentiment", use_container_width=True)
-
-with col2:
-    st.markdown("### Analysis Results")
-    
-    if analyze_btn:
-        if not review_text.strip():
-            st.warning("⚠️ Review text cannot be empty. Please type some text first!")
-        else:
-            with st.spinner("Analyzing text using DistilBERT model..."):
-                try:
-                    # Make post request to FastAPI backend
-                    response = requests.post(
-                        f"{FASTAPI_URL}/predict",
-                        json={"text": review_text},
-                        timeout=15
-                    )
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        sentiment = data["sentiment"]
-                        confidence = data["confidence"]
-                        
-                        # Save prediction history
-                        st.session_state.history.insert(0, {
-                            "text": review_text[:60] + "..." if len(review_text) > 60 else review_text,
-                            "sentiment": sentiment,
-                            "confidence": confidence
-                        })
-                        
-                        # Render result card based on sentiment
-                        if sentiment == "Positive":
-                            st.markdown(
-                                f"""
-                                <div class="prediction-card-pos">
-                                    <h4 style="color: #2ecc71; margin-top:0;">POSITIVITY DETECTED</h4>
-                                    <p class="metric-value">Positive</p>
-                                    <p style="margin-bottom: 5px; font-weight: 500;">Confidence score: {confidence*100:.2f}%</p>
-                                </div>
-                                """,
-                                unsafe_allow_html=True
-                            )
-                            st.progress(confidence)
-                        else:
-                            st.markdown(
-                                f"""
-                                <div class="prediction-card-neg">
-                                    <h4 style="color: #e74c3c; margin-top:0;">NEGATIVITY DETECTED</h4>
-                                    <p class="metric-value">Negative</p>
-                                    <p style="margin-bottom: 5px; font-weight: 500;">Confidence score: {confidence*100:.2f}%</p>
-                                </div>
-                                """,
-                                unsafe_allow_html=True
-                            )
-                            st.progress(confidence)
-                            
-                    elif response.status_code == 400:
-                        st.error(f"❌ Bad Request: {response.json().get('detail', 'Empty text error')}")
-                    else:
-                        st.error(f"❌ Server Error: Received code {response.status_code}")
-                        
-                except requests.exceptions.ConnectionError:
-                    st.error("❌ Connection Error: Cannot reach the backend API.")
-                    st.info(
-                        f"Please check if the FastAPI application is running at **{FASTAPI_URL}**.\n\n"
-                        "Run the following command to start the backend:\n"
-                        "```bash\nuvicorn api.main:app --port 8000 --reload\n```"
-                    )
-                except Exception as e:
-                    st.error(f"❌ An unexpected error occurred: {str(e)}")
-    else:
-        st.info("💡 Write a review on the left and click **Analyze Sentiment** to display prediction details here.")
-
-# Sidebar for metadata and prediction history
-with st.sidebar:
-    st.markdown('<p class="sidebar-title">⚙️ Application Status</p>', unsafe_allow_html=True)
-    
-    # Check health status of API
+    # 2. Load the TOKENIZER from the Internet
+    # We grab the standard one because the vocab is standard and files were missing locally
     try:
-        health_resp = requests.get(f"{FASTAPI_URL}/", timeout=2)
-        if health_resp.status_code == 200:
-            st.success("🟢 API Server: Online")
-            st.caption(f"Backend Model: `{health_resp.json().get('model')}`")
-        else:
-            st.warning("🟡 API Server: Status code " + str(health_resp.status_code))
-    except requests.exceptions.RequestException:
-        st.error("🔴 API Server: Offline")
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    except Exception as e:
+        st.error(f"Error loading tokenizer: {e}")
+        return None, None
+
+    # 3. Load the MODEL from your Local Folder
+    try:
+        model = TFAutoModelForSequenceClassification.from_pretrained(local_model_path)
+    except OSError:
+        st.error(f" Could not find folder '{local_model_path}'. Please make sure it is in the same directory as app.py")
+        return None, None
         
-    st.markdown("---")
-    
-    st.markdown('<p class="sidebar-title">🕒 Prediction History</p>', unsafe_allow_html=True)
-    if not st.session_state.history:
-        st.write("No predictions run yet.")
+    return tokenizer, model
+
+# Load resources
+tokenizer, model = load_resources()
+
+# Sample review categories (Same as before)
+positive_reviews = [
+    "Amazing soundtrack, perfect pacing, and visuals that made the experience feel magical and cinematic.",
+    "This movie was fantastic! The acting was great and the plot was thrilling.",
+    "Exceeded expectations with inspiring storytelling, top-notch acting, and a powerful emotional message.",
+]
+
+negative_reviews = [
+    "Visual effects were cheap, editing inconsistent, and the narrative failed to engage at all.",
+    "Started strong but didn't maintain the energy or emotional impact",
+    "Terrible experience! The film dragged endlessly and made no sense at all.",
+]
+
+# Streamlit configuration
+st.set_page_config(page_title="IMDB Sentiment Analysis", page_icon="🎬")
+st.title("🎬 IMDB Movie Review Sentiment Analysis")
+st.markdown("Enter a movie review below and let the **DistilBERT Transformer** model predict its sentiment!")
+
+# Display sample categories
+with st.expander("📁 Sample Review Library (Click to Explore)"):
+    st.markdown("**Positive Reviews**")
+    for rev in positive_reviews:
+        st.markdown(f"- {rev}")
+    st.markdown("**Negative Reviews**")
+    for rev in negative_reviews:
+        st.markdown(f"- {rev}")
+
+# User input
+review = st.text_area("💬 Enter your movie review (at least 5 words):")
+
+# Prediction logic
+if st.button("Predict"):
+    if review.strip() == "":
+        st.warning("Please enter a review.")
+    elif len(review.split()) < 5:
+        st.warning("Please enter at least 5 words for better context.")
     else:
-        for idx, item in enumerate(st.session_state.history[:10]):  # Show last 10 entries
-            color = "#2ecc71" if item["sentiment"] == "Positive" else "#e74c3c"
-            st.markdown(
-                f"""
-                <div class="history-item">
-                    <p style="margin-bottom:2px; font-size:0.85rem; font-style:italic;">"{item['text']}"</p>
-                    <p style="margin-bottom:0; font-weight:bold; font-size:0.9rem; color: {color};">
-                        {item['sentiment']} ({item['confidence']*100:.1f}%)
-                    </p>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            
-        if len(st.session_state.history) > 10:
-            st.caption(f"Showing last 10 of {len(st.session_state.history)} predictions.")
-            if st.button("Clear History"):
-                st.session_state.history = []
-                st.rerun()
+        if model is None or tokenizer is None:
+            st.error("Model or Tokenizer failed to load. Please check your files.")
+        else:
+            with st.spinner("Analyzing with DistilBERT..."):
+                # 1. Preprocess using the Tokenizer (No more regex/word_index!)
+                inputs = tokenizer(
+                    review, 
+                    return_tensors="tf", 
+                    truncation=True, 
+                    padding=True, 
+                    max_length=MAX_LENGTH
+                )
+
+                # 2. Predict
+                outputs = model(inputs)
+                logits = outputs.logits
+                
+                # 3. Convert logits to probabilities using Softmax
+                probabilities = tf.nn.softmax(logits, axis=1).numpy()[0]
+                
+                # Index 0 = Negative, Index 1 = Positive
+                neg_score = probabilities[0]
+                pos_score = probabilities[1]
+
+                # Determine Sentiment
+                if pos_score > neg_score:
+                    sentiment = "Positive 😊"
+                    confidence = pos_score
+                    is_positive = True
+                else:
+                    sentiment = "Negative 😞"
+                    confidence = neg_score
+                    is_positive = False
+
+                # 4. Display Result
+                st.subheader("Prediction Result")
+                if is_positive:
+                    st.success(f"**Sentiment:** {sentiment}")
+                else:
+                    st.error(f"**Sentiment:** {sentiment}")
+                
+                st.info(f"Confidence Score: {confidence:.2f}")

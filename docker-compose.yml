@@ -15,6 +15,7 @@ services:
       - mlflow_data:/workspace
     environment:
       - MLFLOW_TRACKING_URI=sqlite:///mlflow.db
+      - TF_USE_LEGACY_KERAS=1
     command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /workspace/mlruns
 
   # FastAPI API service
@@ -31,7 +32,8 @@ services:
       - mlflow_data:/workspace
     environment:
       - MLFLOW_TRACKING_URI=http://mlflow:5000
-      - MAX_SAMPLES=1000
+      - TF_USE_LEGACY_KERAS=1
+      - MAX_SAMPLES=-1
     depends_on:
       - mlflow
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000
@@ -46,6 +48,7 @@ services:
       - "8501:8501"
     environment:
       - FASTAPI_URL=http://api:8000
+      - TF_USE_LEGACY_KERAS=1
     depends_on:
       - api
     command: streamlit run app/app.py --server.port 8501 --server.address 0.0.0.0

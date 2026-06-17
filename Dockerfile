@@ -3,7 +3,8 @@ FROM python:3.11-slim
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    MAX_SAMPLES=1000
+    TF_USE_LEGACY_KERAS=1 \
+    MAX_SAMPLES=-1
 
 WORKDIR /workspace
 
