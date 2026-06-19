@@ -21,16 +21,17 @@ A production-ready, end-to-end MLOps pipeline for movie review sentiment classif
 graph TD
     A[IMDB Dataset / HF Datasets] -->|Preprocess & Tokenize| B[DistilBERT Fine-Tuning]
     B -->|Log Params, Loss, Metrics| C[(MLflow Server & SQLite)]
-    B -->|Save Best Weights| D[models/distilbert_v1/]
+    B -->|Save Best Weights| D[notebooks/distilbert_imdb_tf_model/]
     C -->|Register Model| E[MLflow Model Registry]
     
-    D -->|Load Weights| F[FastAPI Service]
-    F -->|Inference Route| G[Streamlit UI Webapp]
+    D -->|Load Weights| F[FastAPI Service on Hugging Face]
+    F -->|Inference Route| G[Streamlit UI Webapp on Streamlit Cloud]
     
     subgraph CI/CD & Deployment
     H[GitHub Repo] -->|Push/PR Trigger| I[GitHub Actions]
     I -->|Run Pytest & Build Check| J[Docker Build]
-    J -->|Container Image| K[Docker Compose / Render]
+    J -->|Container Image| K[Hugging Face Spaces]
+    G -->|Query over HTTPS| F
     end
 ```
 
@@ -229,7 +230,8 @@ The test suite validates:
 
 For cloud deployments, follow this MLOps topology:
 1. **GitHub Repository**: Holds the source code and configuration.
-2. **GitHub Actions**: Runs code linting, executes pytest, verifies Docker builds.
-3. **MLflow database store**: Deployed on a managed cloud database (e.g., PostgreSQL) with artifacts stored on an S3/GCS bucket.
-4. **FastAPI Web Service**: Deployed on **Render** or **AWS ECS** using the `Dockerfile`, pointing to the registered model path.
-5. **Streamlit UI**: Deployed on **Streamlit Cloud** or **Render**, referencing the public FastAPI URL.
+2. **GitHub Actions**: Runs code linting, executes pytest (pulling weights via Git LFS), and verifies Docker builds.
+3. **MLflow database store**: Deployed on a managed cloud database (e.g., PostgreSQL) with artifacts stored on an S3/GCS bucket (Optional).
+4. **FastAPI Web Service**: Deployed on **Hugging Face Spaces** using the `Dockerfile`, pulling the tracked LFS model weights.
+5. **Streamlit UI**: Deployed on **Streamlit Community Cloud**, querying the public Hugging Face Spaces FastAPI endpoint over HTTPS.
+
