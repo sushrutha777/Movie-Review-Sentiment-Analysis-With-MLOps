@@ -6,7 +6,7 @@ import requests
 FASTAPI_URL = os.getenv("FASTAPI_URL", "http://127.0.0.1:8000").rstrip("/")
 
 st.set_page_config(
-    page_title="Sentify - DistilBERT MLOps",
+    page_title="Movie Sentiment Analysis MLOps",
     page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded"
@@ -187,7 +187,7 @@ else:
     st.sidebar.warning("FastAPI Backend is unreachable. Please verify that the API server is running.")
 
 # Main Header (Full width)
-st.markdown('<h1 class="main-title">Sentify MLOps Portal</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-title">End-to-End Movie Review Sentiment Analysis with MLOps</h1>', unsafe_allow_html=True)
 st.markdown("##### Real-time Sentiment Classifier served via FastAPI & DistilBERT")
 st.markdown("<br>", unsafe_allow_html=True)
 
