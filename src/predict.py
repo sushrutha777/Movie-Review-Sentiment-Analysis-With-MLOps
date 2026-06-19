@@ -41,8 +41,9 @@ class SentimentPredictor:
             )
             self.tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
             self.model = TFAutoModelForSequenceClassification.from_pretrained(
-                MODEL_NAME, num_labels=NUM_LABELS, from_pt=True
+                MODEL_NAME, num_labels=NUM_LABELS
             )
+
 
     def predict(self, text: str) -> Tuple[str, float]:
         """Predicts the sentiment and confidence score of a single text string.

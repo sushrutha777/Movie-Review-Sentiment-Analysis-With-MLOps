@@ -77,8 +77,8 @@ def main() -> None:
     model = TFAutoModelForSequenceClassification.from_pretrained(
         MODEL_NAME,
         num_labels=NUM_LABELS,
-        from_pt=True,
     )
+
 
     # Compile — matches notebook exactly
     model.compile(
