@@ -59,7 +59,8 @@ movie-sentiment-mlops/
 │   └── distilbert_v1/         # Local save path for best fine-tuned model checkpoint
 │
 ├── notebooks/
-│   └── training_experiments.ipynb # Jupyter notebook showcasing pipelines
+│   └── DistilBert_Transformer.ipynb # Jupyter notebook showcasing pipelines
+
 │
 ├── src/
 │   ├── config.py              # Central hyperparameters and file path configurations
