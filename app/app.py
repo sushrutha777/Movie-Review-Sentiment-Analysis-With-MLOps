@@ -195,13 +195,13 @@ st.markdown("<br>", unsafe_allow_html=True)
 col1, col2 = st.columns([7, 5])
 
 with col1:
-    st.markdown("<h3 style='margin-top: 0rem; font-weight: 600;'>Movie Review Text</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='margin-top: 0rem; font-weight: 600;'>Enter Movie Review</h3>", unsafe_allow_html=True)
     
     # Textarea input
     review_input = st.text_area(
         "Movie Review Text",
         value="",
-        placeholder="Type a review here... (e.g., 'An absolute cinematic masterpiece, outstanding performances!')",
+        placeholder="Enter a movie review to analyze sentiment...",
         height=180,
         label_visibility="collapsed"
     )
@@ -213,7 +213,7 @@ with col1:
     btn_col1, btn_col2 = st.columns([3, 7])
     with btn_col1:
         predict_click = st.button(
-            "Classify Sentiment",
+            "Analyze Sentiment",
             use_container_width=True,
             disabled=predict_disabled
         )
@@ -222,8 +222,6 @@ with col1:
             st.caption("Enable the FastAPI backend to activate classification.")
         elif word_count > 0 and word_count < 5:
             st.caption("Note: Short texts (< 5 words) might have less context for the model.")
-        else:
-            st.caption("Submits request to FastAPI /predict endpoint")
 
     if predict_click:
         if not review_input.strip():
@@ -262,7 +260,7 @@ with col1:
 
 # Results and History
 with col2:
-    st.markdown("<h3 style='margin-top: 0rem; font-weight: 600;'>Classification Result</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='margin-top: 0rem; font-weight: 600;'>Prediction Result</h3>", unsafe_allow_html=True)
     
     if "last_result" in st.session_state:
         result = st.session_state.last_result
@@ -298,9 +296,9 @@ with col2:
         st.markdown(
             """
             <div class="glass-card" style="text-align: center; padding: 40px 20px;">
-                <h4 style="margin: 0; opacity: 0.6; font-weight: 600;">Awaiting Review Submission</h4>
+                <h4 style="margin: 0; opacity: 0.6; font-weight: 600;">Ready for Analysis</h4>
                 <p style="font-size: 0.9rem; opacity: 0.5; margin-top: 10px;">
-                    Type a movie review on the left and click Classify Sentiment.
+                    Enter a movie review and run inference to view sentiment prediction and confidence score.
                 </p>
             </div>
             """,
@@ -309,7 +307,7 @@ with col2:
 
 # Prediction History Section (Bottom)
 st.markdown("---")
-st.markdown("### Prediction History")
+st.markdown("### Recent Predictions")
 
 if st.session_state.history:
     # Build clean HTML table without newlines or spaces to prevent markdown code block rendering
