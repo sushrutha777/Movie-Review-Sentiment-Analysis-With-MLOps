@@ -25,7 +25,7 @@ COPY README.md .
 COPY src/ ./src/
 COPY api/ ./api/
 COPY app/ ./app/
-COPY notebooks/distilbert_imdb_tf_model/ ./notebooks/distilbert_imdb_tf_model/
+COPY models/distilbert_imdb_tf_model/ ./models/distilbert_imdb_tf_model/
 
 
 # Install application package in editable mode

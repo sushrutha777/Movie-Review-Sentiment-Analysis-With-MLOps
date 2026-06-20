@@ -1,7 +1,7 @@
 
 # End-to-End Movie Review Sentiment Analysis with MLOps
 
-A production-ready, end-to-end MLOps pipeline for movie review sentiment classification. The project fine-tunes a **DistilBERT** model on movie reviews, tracks experiments with **MLflow**, serves predictions via a **FastAPI** REST interface, and provides a polished **Streamlit** frontend. The entire stack is containerized with **Docker** and automated using **GitHub Actions CI/CD**.
+A production-ready, end-to-end MLOps pipeline for movie review sentiment classification. The project fine-tunes a **DistilBERT** model on movie reviews using a Jupyter notebook, serves predictions via a **FastAPI** REST interface, and provides a polished **Streamlit** frontend. The entire stack is containerized with **Docker** and automated using **GitHub Actions CI/CD**.
 
 ---
 
@@ -9,10 +9,8 @@ A production-ready, end-to-end MLOps pipeline for movie review sentiment classif
 
 ```mermaid
 graph TD
-    A[IMDB Dataset / HF Datasets] -->|Preprocess & Tokenize| B[DistilBERT Fine-Tuning]
-    B -->|Log Params, Loss, Metrics| C[(MLflow Server & SQLite)]
-    B -->|Save Best Weights| D[notebooks/distilbert_imdb_tf_model/]
-    C -->|Register Model| E[MLflow Model Registry]
+    A[IMDB Dataset / HF Datasets] -->|Preprocess & Tokenize| B[DistilBERT Fine-Tuning in Notebook]
+    B -->|Save Best Weights| D[models/distilbert_imdb_tf_model/]
     
     D -->|Load Weights| F[FastAPI Service on Hugging Face]
     F -->|Inference Route| G[Streamlit UI Webapp on Streamlit Cloud]
@@ -46,25 +44,23 @@ movie-sentiment-mlops/
 │
 ├── data/                      # Local data cache folder (created dynamically)
 │
-├── notebooks/
-│   ├── DistilBert_Transformer.ipynb # Jupyter notebook showcasing pipelines
+├── models/
 │   └── distilbert_imdb_tf_model/    # Local save path for best fine-tuned model checkpoint
+│
+├── notebooks/
+│   └── DistilBert_Transformer.ipynb # Jupyter notebook showcasing pipelines
 │
 ├── src/
 │   ├── config.py              # Central hyperparameters and file path configurations
-│   ├── preprocess.py          # Data ingestion, splitting, and tokenization loaders
-│   ├── train.py               # PyTorch training, validation, and MLflow logging
-│   ├── evaluate.py            # Evaluation metrics report and confusion matrix plotting
 │   ├── predict.py             # Predictor wrapper class with CPU/GPU support
 │   └── utils.py               # Structured logging configurations & seed initializers
 │
 ├── tests/
 │   ├── test_api.py            # FastAPI integration client tests
-│   ├── test_inference.py      # Predictor module unit tests
-│   └── test_preprocess.py     # Preprocessing and dataset splitting unit tests
+│   └── test_inference.py      # Predictor module unit tests
 │
 ├── Dockerfile                 # Multi-stage optimized Docker setup
-├── docker-compose.yml         # Container coordinator (FastAPI, Streamlit, MLflow)
+├── docker-compose.yml         # Container coordinator (FastAPI, Streamlit)
 ├── requirements.txt           # Python packages pin list
 ├── setup.py                   # Python package setup for editable installations
 └── README.md                  # System documentation
@@ -96,27 +92,11 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### 2. Run Training Pipeline & MLflow Tracking
-We use a local SQLite backend to track runs and support the MLflow Model Registry.
-
-1. **Start the MLflow Server** (in a separate terminal):
-   ```bash
-   mlflow server --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./mlruns --host 127.0.0.1 --port 5000
-   ```
-2. **Execute Training**:
-   By default, training will run for `3` epochs on a subset of `1000` samples to ensure fast, CPU-friendly verification. To run on the full IMDB dataset, set `MAX_SAMPLES=-1` in your environment variables.
-   ```bash
-   # Run training
-   python src/train.py
-   ```
-   *This logs training metrics, final test metrics, registers the best model under the name `DistilBERTSentimentModel`, and saves checkpoints under `notebooks/distilbert_imdb_tf_model/`.*
-
-3. **Verify Evaluation**:
-   Run evaluation independently to compute the classification report and save the confusion matrix plot:
-   ```bash
-   python src/evaluate.py
-   ```
-   *The confusion matrix plot is saved to `logs/confusion_matrix.png` and logged to MLflow.*
+### 2. Model Training (Jupyter Notebook)
+The model training is done interactively within a Jupyter Notebook rather than through a separate script.
+1. Open the notebook at `notebooks/DistilBert_Transformer.ipynb`.
+2. Run all the cells to load the IMDB dataset, initialize the tokenizer and model, and train.
+3. The final cell will save the fine-tuned model weights and tokenizer directly into `models/distilbert_imdb_tf_model/`.
 
 ---
 
@@ -182,13 +162,12 @@ You can build and deploy the entire multi-service container system in one click.
 
 ### Build and Run with Docker Compose
 ```bash
-# Build and run API, Streamlit and MLflow tracking servers
+# Build and run API and Streamlit UI Frontend
 docker-compose up --build
 ```
 Once started, the services map to the following local ports:
 * **FastAPI Service**: `http://localhost:8000`
 * **Streamlit UI Frontend**: `http://localhost:8501`
-* **MLflow experiment server**: `http://localhost:5000`
 
 ### Run API standalone via Dockerfile
 ```bash
@@ -208,7 +187,6 @@ We use `pytest` for unit and integration testing. Run:
 pytest tests/ -v
 ```
 The test suite validates:
-* **Preprocessing**: Splits integrity, tokenization length mappings, and PyTorch dataloader dimensions.
 * **Inference**: Predictor boundary scores, empty text handling, and list batch prediction methods.
 * **API Endpoints**: Correct GET `/` responses, POST `/predict` status checks, and Pydantic validation error code mappings (422/400).
 
@@ -219,6 +197,5 @@ The test suite validates:
 For cloud deployments, follow this MLOps topology:
 1. **GitHub Repository**: Holds the source code and configuration.
 2. **GitHub Actions**: Runs code linting, executes pytest (pulling weights via Git LFS), and verifies Docker builds.
-3. **MLflow database store**: Deployed on a managed cloud database (e.g., PostgreSQL) with artifacts stored on an S3/GCS bucket (Optional).
-4. **FastAPI Web Service**: Deployed on **Hugging Face Spaces** using the `Dockerfile`, pulling the tracked LFS model weights.
-5. **Streamlit UI**: Deployed on **Streamlit Community Cloud**, querying the public Hugging Face Spaces FastAPI endpoint over HTTPS.
+3. **FastAPI Web Service**: Deployed on **Hugging Face Spaces** using the `Dockerfile`, pulling the tracked LFS model weights.
+4. **Streamlit UI**: Deployed on **Streamlit Community Cloud**, querying the public Hugging Face Spaces FastAPI endpoint over HTTPS.
